@@ -23,11 +23,8 @@ public class KafkaSourceDemo {
                 .setStartingOffsets(OffsetsInitializer.latest())
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
-
         DataStreamSource<String> stream = env.fromSource(kafkaSource, WatermarkStrategy.noWatermarks(), "kafka-source");
-
         stream.print("Kafka");
-
         env.execute();
     }
 
