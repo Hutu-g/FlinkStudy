@@ -1,4 +1,4 @@
-package org.datastream.source.bean;
+package org.datastream.bean;
 
 import java.util.Objects;
 
