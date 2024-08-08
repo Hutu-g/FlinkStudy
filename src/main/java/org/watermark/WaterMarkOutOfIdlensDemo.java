@@ -1,0 +1,78 @@
+package org.watermark;
+
+import org.apache.commons.lang3.time.DateFormatUtils;
+import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.Partitioner;
+import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.streaming.api.datastream.KeyedStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.datastream.WindowedStream;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.util.Collector;
+import org.apache.flink.util.OutputTag;
+import org.datastream.bean.WaterSensor;
+import org.datastream.bean.WaterSensorMapFunction;
+
+import java.time.Duration;
+
+/**
+ *  这个文件，无法正常运行，输入的数据类型是int，process处理的数据类型是POJO.WaterSensor
+ * @Author: hutu
+ * @Date: 2024/8/4 14:39
+ */
+public class WaterMarkOutOfIdlensDemo {
+    public static void main(String[] args) throws Exception {
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(2);
+
+        SingleOutputStreamOperator<Integer> sensorDS = env
+                .socketTextStream("hadoop101", 7777)
+                .partitionCustom(new MyPartitioner(), r -> r)
+                .map(r -> Integer.parseInt(r))
+                .assignTimestampsAndWatermarks(WatermarkStrategy
+                        .<Integer>forMonotonousTimestamps() //乱序流可以设置水位线延迟时间
+                        .withTimestampAssigner((r, ts) -> r * 1000L)
+                        .withIdleness(Duration.ofSeconds(5))); //设置空闲时间
+        // 分成两组： 奇数一组，偶数一组 ， 开10s的事件时间滚动窗口
+
+        OutputTag<Integer> lateTag = new OutputTag<>("late-data", Types.INT);
+
+        SingleOutputStreamOperator<String> process = sensorDS
+                .keyBy(r -> r % 2)
+                .window(TumblingEventTimeWindows.of(Time.seconds(10)))
+                .allowedLateness(Time.seconds(2)) //推迟窗口关闭时间
+                .sideOutputLateData(lateTag)
+                .process(new ProcessWindowFunction<Integer, String, Integer, TimeWindow>() {
+                    @Override
+                    public void process(Integer integer, Context context, Iterable<Integer> elements, Collector<String> out) throws Exception {
+                        long startTs = context.window().getStart();
+                        long endTs = context.window().getEnd();
+                        String windowStart = DateFormatUtils.format(startTs, "yyyy-MM-dd HH:mm:ss.SSS");
+                        String windowEnd = DateFormatUtils.format(endTs, "yyyy-MM-dd HH:mm:ss.SSS");
+
+                        long count = elements.spliterator().estimateSize();
+
+                        out.collect("key=" + integer + "的窗口[" + windowStart + "," + windowEnd + ")包含" + count + "条数据===>" + elements.toString());
+
+                    }
+                });
+        process.print();
+
+        process.getSideOutput(lateTag).printToErr("迟到数据：");
+
+        env.execute();
+    }
+
+    public static class MyPartitioner implements Partitioner<String> {
+        @Override
+        public int partition(String key, int numPartitions) {
+            return Integer.parseInt(key) % numPartitions;
+        }
+    }
+}
